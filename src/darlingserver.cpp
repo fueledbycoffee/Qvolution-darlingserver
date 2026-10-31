@@ -39,6 +39,8 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/signal.h>
+#include <sys/wait.h>
+#include "startup-handshake.hpp"
 #include <filesystem>
 
 #include <darling-config.h>
@@ -1274,10 +1276,6 @@ int main(int argc, char** argv) {
 	darlingPreInit(prefix);
 	regain_privileges();
 
-	// Tell the parent we're ready
-	write(pipefd, ".", 1);
-	close(pipefd);
-
 	// The child reports that its namespace is set up through [0]; the parent gives it the green light through [1].
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, childWaitFDs) != 0) {
 		std::cerr << "Failed to create child waiting socket pair: " << strerror(errno) << std::endl;
@@ -1297,8 +1295,7 @@ int main(int argc, char** argv) {
 		exit(1);
 	} else if (launchdGlobalPID == 0) {
 		// this is the child
-		char buf[1];
-
+		close(pipefd);
 		close(childWaitFDs[1]);
 
 		// Detach launchd into its own session + process group, so that any
@@ -1331,7 +1328,11 @@ int main(int argc, char** argv) {
 		{
 			ensureProcSymlink(prefix);
 		}
-		write(childWaitFDs[0], ".", 1);
+		if (!startupWriteByte(childWaitFDs[0], true)) {
+			fprintf(stderr, "Cannot report launchd namespace readiness: %s\n", strerror(errno));
+			close(childWaitFDs[0]);
+			exit(1);
+		}
 
 		// drop our privileges now
 		perma_drop_privileges(originalUID, originalGID);
@@ -1344,7 +1345,11 @@ int main(int argc, char** argv) {
 		}
 
 		// wait for the parent to give us the green light
-		read(childWaitFDs[0], buf, 1);
+		if (!startupReadByte(childWaitFDs[0])) {
+			fprintf(stderr, "Cannot receive launchd startup permission: %s\n", strerror(errno));
+			close(childWaitFDs[0]);
+			exit(1);
+		}
 		close(childWaitFDs[0]);
 
 		spawnLaunchd(prefix);
@@ -1353,10 +1358,12 @@ int main(int argc, char** argv) {
 
 	// this is the parent
 	close(childWaitFDs[0]);
-	char childStatus;
-	if (read(childWaitFDs[1], &childStatus, 1) != 1) {
-		fprintf(stderr, "launchd's process failed to set up its namespace\n");
-		exit(1);
+	if (!startupReadByte(childWaitFDs[1])) {
+		fprintf(stderr, "launchd's process failed to set up its namespace: %s\n", strerror(errno));
+		close(pipefd);
+		close(childWaitFDs[1]);
+		while (waitpid(launchdGlobalPID, NULL, 0) < 0 && errno == EINTR) {}
+		return 1;
 	}
 
 	// drop our privileges
@@ -1378,8 +1385,25 @@ int main(int argc, char** argv) {
 	// create the server
 	auto server = new DarlingServer::Server(prefix);
 
+	// Nonroot launchers start shellspawn when this byte arrives; its first RPC needs the bound socket.
+	if (!startupWriteByte(pipefd)) {
+		fprintf(stderr, "Cannot notify launcher of server readiness: %s\n", strerror(errno));
+		close(pipefd);
+		close(childWaitFDs[1]);
+		delete server;
+		while (waitpid(launchdGlobalPID, NULL, 0) < 0 && errno == EINTR) {}
+		return 1;
+	}
+	close(pipefd);
+
 	// tell the child to go ahead; the socket has been created
-	write(childWaitFDs[1], ".", 1);
+	if (!startupWriteByte(childWaitFDs[1], true)) {
+		fprintf(stderr, "Cannot grant launchd startup permission: %s\n", strerror(errno));
+		close(childWaitFDs[1]);
+		delete server;
+		while (waitpid(launchdGlobalPID, NULL, 0) < 0 && errno == EINTR) {}
+		return 1;
+	}
 	close(childWaitFDs[1]);
 
 	// start the main loop
