@@ -193,7 +193,7 @@ static size_t dtape_map_find_shared_entries_locked(dtape_map_t* map, uint64_t ad
 	}
 
 	RB_FOREACH(entry, dtape_map_shared_entry_head, &map->shared_entries) {
-		if (entry->address + entry->size < address || entry->address > address + size) {
+		if (entry->address + entry->size <= address || entry->address >= address + size) {
 			continue;
 		}
 
@@ -207,8 +207,6 @@ static size_t dtape_map_find_shared_entries_locked(dtape_map_t* map, uint64_t ad
 	return count;
 };
 
-// TODO: we should have the process inform us when it unmaps a shared entry that we remapped;
-//       right now, we only close the memfd when the process dies (so the memory is potentially in-use needlessly).
 
 void dtape_vm_map_destroy(vm_map_t map) {
 	if (os_ref_release(&map->map_refcnt) != 0) {
@@ -522,17 +520,50 @@ boolean_t vm_map_copy_validate_size(vm_map_t dst_map, vm_map_copy_t copy, vm_map
 };
 
 kern_return_t vm_map_remove(vm_map_t map, vm_map_offset_t start, vm_map_offset_t end, boolean_t flags) {
-	if (map == kernel_map) {
-		if (munmap((void*)start, end - start) < 0) {
-			return KERN_FAILURE;
-		}
-		return KERN_SUCCESS;
-	} else {
-		if (dtape_hooks->task_free_pages(map->dtape_task->context, start, dtape_byte_count_to_page_count_round_down(end - start)) < 0) {
-			return KERN_FAILURE;
-		}
-		return KERN_SUCCESS;
-	}
+    if (end < start) return KERN_INVALID_ARGUMENT;
+    if (map == kernel_map) {
+        return munmap((void*)start, end - start) < 0 ? KERN_FAILURE : KERN_SUCCESS;
+    }
+    /* Keep descriptor intervals in step with real unmaps. Preallocate the only
+     * possible middle split so allocation failure leaves the mapping intact. */
+    dtape_map_shared_entry_t *entry, *tmp, *suffix = NULL;
+    dtape_mutex_lock(&map->shared_entry_lock);
+    RB_FOREACH(entry, dtape_map_shared_entry_head, &map->shared_entries) {
+        uint64_t entry_end = entry->address + entry->size;
+        if (entry->address < start && entry_end > end && start != end) {
+            suffix = dtape_map_shared_entry_create(end, entry_end - end,
+                entry->page_offset + ((end - entry->address) >> map->dtape_page_shift), entry->descriptor);
+            if (!suffix) {
+                dtape_mutex_unlock(&map->shared_entry_lock);
+                return KERN_RESOURCE_SHORTAGE;
+            }
+            break;
+        }
+    }
+    if (dtape_hooks->task_free_pages(map->dtape_task->context, start,
+            dtape_byte_count_to_page_count_round_down(end - start)) < 0) {
+        if (suffix) dtape_map_shared_entry_destroy(suffix);
+        dtape_mutex_unlock(&map->shared_entry_lock);
+        return KERN_FAILURE;
+    }
+    RB_FOREACH_SAFE(entry, dtape_map_shared_entry_head, &map->shared_entries, tmp) {
+        uint64_t entry_end = entry->address + entry->size;
+        if (entry_end <= start || entry->address >= end) continue;
+        if (entry->address < start) {
+            entry->size = start - entry->address;
+        } else if (entry_end > end) {
+            RB_REMOVE(dtape_map_shared_entry_head, &map->shared_entries, entry);
+            entry->page_offset += (end - entry->address) >> map->dtape_page_shift;
+            entry->address = end; entry->size = entry_end - end;
+            dtape_map_insert_shared_entry_locked(map, entry);
+        } else {
+            RB_REMOVE(dtape_map_shared_entry_head, &map->shared_entries, entry);
+            dtape_map_shared_entry_destroy(entry);
+        }
+    }
+    if (suffix) dtape_map_insert_shared_entry_locked(map, suffix);
+    dtape_mutex_unlock(&map->shared_entry_lock);
+    return KERN_SUCCESS;
 };
 
 kern_return_t mach_vm_allocate_kernel(vm_map_t map, mach_vm_offset_t* addr, mach_vm_size_t size, int flags, vm_tag_t tag) {
@@ -857,6 +888,11 @@ static kern_return_t mach_vm_remap_external_shared(vm_map_t target_map, mach_vm_
 	dtape_map_shared_entry_t* target_shared_entry = NULL;
 	dtape_map_shared_entry_t* src_existing_entries[8];
 	size_t src_existing_entry_count = 0;
+    uint64_t shared_page_offset = 0;
+
+    if (!size || memory_address > UINT64_MAX - size ||
+        memory_address + size > UINT64_MAX - (sysconf(_SC_PAGESIZE) - 1))
+        return KERN_INVALID_ARGUMENT;
 
 	uintptr_t end_memaddr = mach_vm_round_page(memory_address + size);
 	uintptr_t start_memaddr = mach_vm_trunc_page(memory_address);
@@ -884,15 +920,18 @@ static kern_return_t mach_vm_remap_external_shared(vm_map_t target_map, mach_vm_
 
 	src_existing_entry_count = dtape_map_find_shared_entries_locked(src_map, start_memaddr, map_size, src_existing_entries, sizeof(src_existing_entries) / sizeof(*src_existing_entries));
 
-	if (src_existing_entry_count == 1 && src_existing_entries[0]->address == start_memaddr && src_existing_entries[0]->size >= map_size) {
+	if (src_existing_entry_count == 1 && src_existing_entries[0]->address <= start_memaddr && start_memaddr - src_existing_entries[0]->address <= src_existing_entries[0]->size && map_size <= src_existing_entries[0]->size - (start_memaddr - src_existing_entries[0]->address)) {
 		// special case for what LLDB does with dyld info
 		dtape_map_shared_descriptor_retain(src_existing_entries[0]->descriptor);
 		descriptor = src_existing_entries[0]->descriptor;
+        shared_page_offset = src_existing_entries[0]->page_offset +
+            ((start_memaddr - src_existing_entries[0]->address) >> src_map->dtape_page_shift);
 		dtape_mutex_unlock(&src_map->shared_entry_lock);
 		goto src_setup_done;
 	} else if (src_existing_entry_count != 0) {
-		// TODO: handle this case gracefully
-		dtape_stub_unsafe("Cannot complexly remap existing shared regions yet");
+        dtape_mutex_unlock(&src_map->shared_entry_lock);
+        kr = KERN_NOT_SUPPORTED;
+        goto out;
 	}
 
 	dtape_mutex_unlock(&src_map->shared_entry_lock);
@@ -935,14 +974,11 @@ static kern_return_t mach_vm_remap_external_shared(vm_map_t target_map, mach_vm_
 		goto out;
 	}
 
+    src_shared_entry = dtape_map_shared_entry_create(start_memaddr, map_size, 0, descriptor);
+    if (!src_shared_entry) { kr = KERN_RESOURCE_SHORTAGE; goto out; }
+
 	if (dtape_hooks->task_map_file(src_map->dtape_task->context, descriptor->memfd, dtape_byte_count_to_page_count_round_up(map_size), prot, start_memaddr, 0, dtape_memory_flag_fixed | dtape_memory_flag_overwrite) != start_memaddr) {
 		kr = KERN_FAILURE;
-		goto out;
-	}
-
-	src_shared_entry = dtape_map_shared_entry_create(start_memaddr, map_size, 0, descriptor);
-	if (!src_shared_entry) {
-		kr = KERN_RESOURCE_SHORTAGE;
 		goto out;
 	}
 
@@ -950,17 +986,12 @@ static kern_return_t mach_vm_remap_external_shared(vm_map_t target_map, mach_vm_
 	src_shared_entry = NULL; // the map now owns the shared entry
 
 src_setup_done:
-	target_addr = dtape_hooks->task_map_file(target_map->dtape_task->context, descriptor->memfd, dtape_byte_count_to_page_count_round_up(map_size), prot, 0, 0, dtape_memory_flag_none);
-	if (!target_addr) {
-		kr = KERN_FAILURE;
-		goto out;
-	}
-
-	target_shared_entry = dtape_map_shared_entry_create(target_addr, map_size, 0, descriptor);
-	if (!target_shared_entry) {
-		kr = KERN_RESOURCE_SHORTAGE;
-		goto out;
-	}
+    target_shared_entry = dtape_map_shared_entry_create(0, map_size, shared_page_offset, descriptor);
+    if (!target_shared_entry) { kr = KERN_RESOURCE_SHORTAGE; goto out; }
+    target_addr = dtape_hooks->task_map_file(target_map->dtape_task->context, descriptor->memfd,
+        dtape_byte_count_to_page_count_round_up(map_size), prot, 0, shared_page_offset, dtape_memory_flag_none);
+    if (!target_addr) { kr = KERN_FAILURE; goto out; }
+    target_shared_entry->address = target_addr;
 
 	dtape_map_insert_shared_entry(target_map, target_shared_entry);
 	target_shared_entry = NULL; // the map now owns the shared entry
