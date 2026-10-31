@@ -115,6 +115,7 @@ add_executable(darlingserver
 	src/process.cpp
 	src/thread.cpp
 	src/utility.cpp
+	src/unix-root-alias.cpp
 	src/kqchan.cpp
 	src/async-writer.cpp
 	src/stack-pool.cpp

@@ -18,6 +18,7 @@
  */
 
 #include <darlingserver/process.hpp>
+#include <darlingserver/unix-root-alias.hpp>
 #include <darlingserver/registry.hpp>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -143,6 +144,17 @@ std::vector<std::shared_ptr<DarlingServer::Thread>> DarlingServer::Process::thre
 std::string DarlingServer::Process::vchrootPath() const {
 	std::shared_lock lock(_rwlock);
 	return _cachedVchrootPath;
+};
+
+std::pair<int, std::string> DarlingServer::Process::vchrootSocketRoot() const {
+	std::shared_ptr<FD> root;
+	std::string path;
+	{
+		std::shared_lock lock(_rwlock);
+		root = _vchrootDescriptor;
+		path = _cachedVchrootPath;
+	}
+	return retainUnixRootAlias(std::move(root), path);
 };
 
 void DarlingServer::Process::setVchrootDirectory(std::shared_ptr<FD> directoryDescriptor) {

@@ -651,6 +651,15 @@ calls = [
 		('count', 'int32_t'),
 		('activity_id', 'uint64_t*', 'uint64_t'),
 	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
+	# Append only: return an authenticated caller-root alias, not a passed-in PID/FD.
+	('vchroot_socket_root', [
+		('buffer', 'char*', 'uint64_t'),
+		('buffer_size', 'uint64_t'),
+	], [
+		('length', 'uint64_t'),
+		('server_pid', 'int32_t'),
+		('directory_fd', 'int32_t'),
+	]),
 ]
 
 ALLOWED_PRIVATE_TYPES = [

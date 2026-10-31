@@ -19,6 +19,7 @@
 
 #define _GNU_SOURCE 1
 #include <darlingserver/call.hpp>
+#include <darlingserver/unix-root-alias.hpp>
 #include <darlingserver/server.hpp>
 #include <sys/uio.h>
 
@@ -422,6 +423,35 @@ void DarlingServer::Call::VchrootPath::processCall() {
 	}
 
 	_sendReply(code, fullLength);
+};
+
+void DarlingServer::Call::VchrootSocketRoot::processCall() {
+	int code = 0;
+	uint64_t length = 0;
+	int32_t descriptor = -1, server = -1;
+	try {
+		if (auto thread = _thread.lock()) {
+			if (auto process = thread->process()) {
+				auto root = process->vchrootSocketRoot();
+				server = unixRootAliasProcessID();
+				length = root.second.size();
+				if (_body.buffer_size <= length) {
+					code = -ENAMETOOLONG;
+				} else if (!process->writeMemory(_body.buffer, root.second.c_str(), length + 1, &code)) {
+					code = -code;
+				} else {
+					descriptor = root.first;
+				}
+			} else code = -ESRCH;
+		} else code = -ESRCH;
+	} catch (const std::system_error& error) {
+		code = -error.code().value();
+	} catch (const std::bad_alloc&) {
+		code = -ENOMEM;
+	} catch (...) {
+		code = -EIO;
+	}
+	_sendReply(code, length, server, descriptor);
 };
 
 void DarlingServer::Call::TaskSelfTrap::processCall() {

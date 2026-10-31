@@ -161,6 +161,7 @@ namespace DarlingServer {
 		std::vector<std::shared_ptr<Thread>> threads() const;
 
 		std::string vchrootPath() const;
+		std::pair<int, std::string> vchrootSocketRoot() const;
 		void setVchrootDirectory(std::shared_ptr<FD> directoryDescriptor);
 
 		std::shared_ptr<Process> parentProcess() const;
