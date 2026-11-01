@@ -615,6 +615,14 @@ kern_return_t task_policy_get(task_t task, task_policy_flavor_t flavor, task_pol
 			if (*count < TASK_POLICY_STATE_COUNT) {
 				return KERN_INVALID_ARGUMENT;
 			}
+			/*
+			 * Only root can get this info. xnu tests sec_token.val[0], the effective uid that
+			 * set_security_token copies from the credential; duct-tape never updates sec_token,
+			 * and keeps the caller's effective uid in audit_token.val[1] (dtape_task_uidgid).
+			 */
+			if (current_task()->audit_token.val[1] != 0) {
+				return KERN_PROTECTION_FAILURE;
+			}
 			memset(policy_info, 0, sizeof(struct task_policy_state));
 			break;
 		}
