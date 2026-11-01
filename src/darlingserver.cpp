@@ -219,8 +219,17 @@ void setupUserHome(const char* prefix, uid_t originalUID)
 		};
 		for (size_t i = 0; i < sizeof(library_dirs) / sizeof(library_dirs[0]); i++)
 		{
+			struct stat st;
 			snprintf(buf2, sizeof(buf2), "%s/%s", buf, library_dirs[i]);
-			mkdir(buf2, i == 0 ? 0700 : 0755);
+			if (mkdir(buf2, i == 0 ? 0700 : 0755) != 0 && errno != EEXIST)
+				fprintf(stderr, "Cannot create %s: %s\n", buf2, strerror(errno));
+			else if (stat(buf2, &st) != 0 || !S_ISDIR(st.st_mode))
+				fprintf(stderr, "%s exists but is not a directory\n", buf2);
+			else
+				continue;
+			// without ~/Library none of its subdirectories can be made
+			if (i == 0)
+				break;
 		}
 	}
 
