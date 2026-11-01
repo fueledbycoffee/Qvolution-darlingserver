@@ -198,6 +198,32 @@ void setupUserHome(const char* prefix, uid_t originalUID)
 	// mkdir /Users/$LOGIN
 	mkdir(buf, 0755);
 
+	// The standard Library hierarchy every macOS user home has. Directory APIs
+	// called without "create" return these paths, and apps expect them to
+	// exist. mkdir leaves directories that already exist untouched.
+	{
+		static const char* library_dirs[] = {
+			"Library",
+			"Library/Application Support",
+			"Library/Application Scripts",
+			"Library/Caches",
+			"Library/Containers",
+			"Library/Cookies",
+			"Library/Group Containers",
+			"Library/HTTPStorages",
+			"Library/Keychains",
+			"Library/Logs",
+			"Library/Preferences",
+			"Library/Saved Application State",
+			"Library/WebKit",
+		};
+		for (size_t i = 0; i < sizeof(library_dirs) / sizeof(library_dirs[0]); i++)
+		{
+			snprintf(buf2, sizeof(buf2), "%s/%s", buf, library_dirs[i]);
+			mkdir(buf2, i == 0 ? 0700 : 0755);
+		}
+	}
+
 	snprintf(buf2, sizeof(buf2), "/Volumes/SystemRoot%s", home);
 
 	strcat(buf, "/LinuxHome");
