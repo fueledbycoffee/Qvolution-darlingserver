@@ -579,12 +579,73 @@ void task_name_deallocate(task_name_t task_name) {
 	dtape_stub_unsafe();
 };
 
+/*
+ * Follows xnu's task_policy_get (osfmk/kern/task_policy.c). Darling keeps no task policy:
+ * task_policy_set accepts and drops it, and proc_get_effective_task_policy reports the
+ * unspecified role. So every flavor reports xnu's default ("get_default") values, which
+ * are also what a task that never set a policy has.
+ */
 kern_return_t task_policy_get(task_t task, task_policy_flavor_t flavor, task_policy_t policy_info, mach_msg_type_number_t* count, boolean_t* get_default) {
-	dtape_stub_unsafe();
+	if (task == TASK_NULL || task == kernel_task) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
+	switch (flavor) {
+		case TASK_CATEGORY_POLICY: {
+			task_category_policy_t info = (task_category_policy_t)policy_info;
+			if (*count < TASK_CATEGORY_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			info->role = TASK_UNSPECIFIED;
+			break;
+		}
+
+		case TASK_BASE_QOS_POLICY: /* FALLTHRU */
+		case TASK_OVERRIDE_QOS_POLICY: {
+			task_qos_policy_t info = (task_qos_policy_t)policy_info;
+			if (*count < TASK_QOS_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			info->task_latency_qos_tier = LATENCY_QOS_TIER_UNSPECIFIED;
+			info->task_throughput_qos_tier = THROUGHPUT_QOS_TIER_UNSPECIFIED;
+			break;
+		}
+
+		case TASK_POLICY_STATE: {
+			if (*count < TASK_POLICY_STATE_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			/*
+			 * Only root can get this info. xnu tests sec_token.val[0], the effective uid that
+			 * set_security_token copies from the credential; duct-tape never updates sec_token,
+			 * and keeps the caller's effective uid in audit_token.val[1] (dtape_task_uidgid).
+			 */
+			if (current_task()->audit_token.val[1] != 0) {
+				return KERN_PROTECTION_FAILURE;
+			}
+			memset(policy_info, 0, sizeof(struct task_policy_state));
+			break;
+		}
+
+		case TASK_SUPPRESSION_POLICY: {
+			task_suppression_policy_t info = (task_suppression_policy_t)policy_info;
+			if (*count < TASK_SUPPRESSION_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			memset(info, 0, sizeof(*info));
+			info->timer_throttle = LATENCY_QOS_TIER_UNSPECIFIED;
+			break;
+		}
+
+		default:
+			return KERN_INVALID_ARGUMENT;
+	}
+
+	return KERN_SUCCESS;
 };
 
 void task_policy_get_deallocate(task_policy_get_t task_policy_get) {
-	dtape_stub_unsafe();
+	return task_deallocate((task_t)task_policy_get);
 };
 
 kern_return_t task_policy_set(task_t task, task_policy_flavor_t flavor, task_policy_t policy_info, mach_msg_type_number_t count) {

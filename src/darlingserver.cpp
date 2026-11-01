@@ -198,6 +198,41 @@ void setupUserHome(const char* prefix, uid_t originalUID)
 	// mkdir /Users/$LOGIN
 	mkdir(buf, 0755);
 
+	// Darling home-initialization policy, not a guaranteed macOS inventory.
+	// WebKit and modes are GUESS choices; see tests/home-policy-native.md.
+	// Existing directories keep their modes.
+	{
+		static const char* library_dirs[] = {
+			"Library",
+			"Library/Application Support",
+			"Library/Application Scripts",
+			"Library/Caches",
+			"Library/Containers",
+			"Library/Cookies",
+			"Library/Group Containers",
+			"Library/HTTPStorages",
+			"Library/Keychains",
+			"Library/Logs",
+			"Library/Preferences",
+			"Library/Saved Application State",
+			"Library/WebKit",
+		};
+		for (size_t i = 0; i < sizeof(library_dirs) / sizeof(library_dirs[0]); i++)
+		{
+			struct stat st;
+			snprintf(buf2, sizeof(buf2), "%s/%s", buf, library_dirs[i]);
+			if (mkdir(buf2, i == 0 ? 0700 : 0755) != 0 && errno != EEXIST)
+				fprintf(stderr, "Cannot create %s: %s\n", buf2, strerror(errno));
+			else if (stat(buf2, &st) != 0 || !S_ISDIR(st.st_mode))
+				fprintf(stderr, "%s exists but is not a directory\n", buf2);
+			else
+				continue;
+			// without ~/Library none of its subdirectories can be made
+			if (i == 0)
+				break;
+		}
+	}
+
 	snprintf(buf2, sizeof(buf2), "/Volumes/SystemRoot%s", home);
 
 	strcat(buf, "/LinuxHome");
