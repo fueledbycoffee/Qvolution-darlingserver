@@ -198,9 +198,9 @@ void setupUserHome(const char* prefix, uid_t originalUID)
 	// mkdir /Users/$LOGIN
 	mkdir(buf, 0755);
 
-	// The standard Library hierarchy every macOS user home has. Directory APIs
-	// called without "create" return these paths, and apps expect them to
-	// exist. mkdir leaves directories that already exist untouched.
+	// Darling home-initialization policy, not a guaranteed macOS inventory.
+	// WebKit and modes are GUESS choices; see tests/home-policy-native.md.
+	// Existing directories keep their modes.
 	{
 		static const char* library_dirs[] = {
 			"Library",
