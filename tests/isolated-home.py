@@ -9,6 +9,18 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 FOLDERS = ('Documents', 'Desktop', 'Downloads', 'Movies', 'Music', 'Pictures', 'Public')
 
+
+def snapshot_home(home):
+    entries = {}
+    for directory, dirs, files in os.walk(home, followlinks=False):
+        for path in [Path(directory), *(Path(directory) / name for name in dirs + files)]:
+            st = path.lstat()
+            entries[str(path.relative_to(home))] = (
+                st.st_mode, st.st_ino, st.st_mtime_ns,
+                os.readlink(path) if path.is_symlink() else None,
+            )
+    return entries
+
 class HomeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -34,7 +46,7 @@ int main(int argc, char** argv) {
 }
 ''')
         cls.driver = cls.work / 'driver'
-        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         '-Wno-sign-compare', '-I', str(ROOT / 'src'), str(source),
                         '-o', str(cls.driver)], check=True)
         import pwd
@@ -76,9 +88,9 @@ int main(int argc, char** argv) {
 
     def test_existing_shared_prefix_is_refused_without_mutation(self):
         self.run_setup(None)
-        before = {p.name: os.readlink(p) for p in self.home.iterdir()}
+        before = snapshot_home(self.home)
         self.run_setup(success=False)
-        self.assertEqual({p.name: os.readlink(p) for p in self.home.iterdir()}, before)
+        self.assertEqual(snapshot_home(self.home), before)
 
     def test_symlink_parent_is_refused(self):
         outside = self.prefix / 'outside'
