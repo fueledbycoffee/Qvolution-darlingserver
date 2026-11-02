@@ -41,6 +41,7 @@
 #include <sys/signal.h>
 #include <sys/wait.h>
 #include "startup-handshake.hpp"
+#include "isolated-home.hpp"
 #include <filesystem>
 
 #include <darling-config.h>
@@ -157,6 +158,17 @@ const char* xdgDirectory(const char* name)
 
 void setupUserHome(const char* prefix, uid_t originalUID)
 {
+	const char* isolated = getenv("DARLING_ISOLATED_HOME");
+	if (isolated && strcmp(isolated, "1") == 0) {
+		struct passwd* pw = getpwuid(originalUID);
+		if (!pw || !setupIsolatedHome(prefix, pw->pw_name)) {
+			fprintf(stderr, "Cannot initialize isolated prefix home: %s. Use a fresh prefix; existing links and files are preserved.\n",
+				pw ? strerror(errno) : "unknown user");
+			exit(1);
+		}
+		return;
+	}
+
 	char buf[4096], buf2[4096];
 
 	snprintf(buf, sizeof(buf), "%s/Users", prefix);
