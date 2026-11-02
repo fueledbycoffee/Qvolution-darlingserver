@@ -47,6 +47,7 @@ struct dtape_thread {
 	//
 	// uthread stuff for psynch
 	//
+	uint32_t uu_flag;
 	struct dtape_opaque_ksyn_waitq_element kwe;
 	lck_mtx_t  *uu_mtx;
 	uint16_t uu_pri;

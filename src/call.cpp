@@ -658,12 +658,7 @@ void DarlingServer::Call::PthreadKill::processCall() {
 };
 
 void DarlingServer::Call::PthreadCanceled::processCall() {
-	int code = 0;
-
-	callLog.warning() << "TODO: " << __PRETTY_FUNCTION__ << callLog.endLog;
-	code = -ENOSYS;
-
-	_sendReply(code);
+	_sendReply(dtape_pthread_canceled(_body.action));
 };
 
 void DarlingServer::Call::PthreadMarkcancel::processCall() {

@@ -16,6 +16,7 @@
 #endif
 #include <sys/systm.h>
 #include <sys/ux_exception.h>
+#include <sys/user.h>
 
 #include <stdlib.h>
 
@@ -30,6 +31,7 @@
 
 #define LINUX_ENOSYS 38
 #define LINUX_EFAULT 14
+#define LINUX_EINVAL 22
 
 #define LINUX_SI_USER 0
 #define LINUX_SI_KERNEL 0x80
@@ -68,6 +70,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
 	thread->processing_signal = false;
 	thread->name = NULL;
 	thread->waiting_suspended = false;
+	thread->uu_flag = 0;
 	LIST_INIT(&thread->user_states);
 	dtape_mutex_init(&thread->suspension_mutex);
 	dtape_condvar_init(&thread->suspension_condvar);
@@ -530,6 +533,30 @@ void dtape_thread_sigexc_exit(dtape_thread_t* thread) {
 
 	free(user_state);
 };
+
+// Adapted from XNU bsd/kern/kern_sig.c, __pthread_canceled.
+int dtape_pthread_canceled(int action) {
+	dtape_thread_t* thread = dtape_hooks->current_thread();
+	int result = 0;
+	thread_lock(&thread->xnu_thread);
+	switch (action) {
+		case 1:
+			thread->uu_flag &= ~UT_CANCELDISABLE;
+			break;
+		case 2:
+			thread->uu_flag |= UT_CANCELDISABLE;
+			break;
+		default:
+			if ((thread->uu_flag & (UT_CANCELDISABLE | UT_CANCEL | UT_CANCELED)) == UT_CANCEL) {
+				thread->uu_flag &= ~UT_CANCEL;
+				thread->uu_flag |= UT_CANCELED | UT_NO_SIGMASK;
+			} else {
+				result = -LINUX_EINVAL;
+			}
+	}
+	thread_unlock(&thread->xnu_thread);
+	return result;
+}
 
 void dtape_thread_dying(dtape_thread_t* thread) {
 	thread_lock(&thread->xnu_thread);
