@@ -888,7 +888,7 @@ thread_set_state(
 				s64.dr6 = s->dr6;
 				s64.dr7 = s->dr7;
 
-				return thread_set_state(thread, x86_DEBUG_STATE64, (thread_state_t) &s,
+				return thread_set_state(thread, x86_DEBUG_STATE64, (thread_state_t) &s64,
 						x86_DEBUG_STATE64_COUNT);
 			}
 			case x86_DEBUG_STATE64:
@@ -1511,7 +1511,9 @@ kern_return_t thread_info(thread_t xthread, thread_flavor_t flavor, thread_info_
 		};
 
 		default:
-			dtape_stub_unsafe("Unimplemented flavor");
+			// the flavor is guest-controlled: reject it as XNU does, never abort the server
+			dtape_log_debug("%s: unsupported flavor %u", __FUNCTION__, flavor);
+			return KERN_INVALID_ARGUMENT;
 	}
 };
 

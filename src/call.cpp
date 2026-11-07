@@ -55,6 +55,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			throw std::invalid_argument("Invalid call number");
 	}
 
+	if (requestMessage.uid() != getuid()) {
+		throw std::runtime_error("System-reported message UID != darlingserver UID");
+	}
+
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
 		// now let's lookup (and possibly create) the process and thread making this call
 		process = processRegistry().registerIfAbsent(header->pid, [&]() {
@@ -88,6 +92,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			return nullptr;
 		}
 
+		// checked before thread registration so a rejected message cannot change a thread's reply address
+		if (process->id() != requestMessage.pid()) {
+			throw std::runtime_error("System-reported message PID != darlingserver-recorded PID");
+		}
+
 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
 			std::shared_ptr<Thread> tmp = nullptr;
 
@@ -117,11 +126,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			return nullptr;
 		}
 
-		thread->setAddress(requestMessage.address());
-
-		if (process->id() != requestMessage.pid()) {
-			throw std::runtime_error("System-reported message PID != darlingserver-recorded PID");
+		if (thread->process() != process) {
+			throw std::runtime_error("Message TID belongs to a different process");
 		}
+
+		thread->setAddress(requestMessage.address());
 	}
 
 	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
@@ -152,10 +161,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		Message replyToSave(pushReplyCall->reply_size, 0);
 
 		// extract the reply-push synchronization pipe
-		auto pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
+		// owned here so it is closed on every exit; the client is blocked on the read end and EOF releases it
+		FD pipeDesc(requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1));
 		char tmp = 1;
 
-		if (pipeDesc < 0) {
+		if (!pipeDesc) {
 			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
 		}
 
@@ -189,9 +199,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		callLog.debug() << *thread << ": Saved client-pushed reply (" << ((thread->_pendingSavedReply) ? "pending" : "normal") << ")" << callLog.endLog;
 
 		// write a byte to the pipe so the caller can continue
-		write(pipeDesc, &tmp, sizeof(tmp));
-		// and close it
-		close(pipeDesc);
+		write(pipeDesc.fd(), &tmp, sizeof(tmp));
 
 		return nullptr;
 	}
